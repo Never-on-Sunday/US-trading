@@ -1,0 +1,6 @@
+provider: alpaca
+feed: sip
+adjustment: split
+start: 2021-01-01
+timeframe: 1Min
+decision_timeframe_minutes: 5

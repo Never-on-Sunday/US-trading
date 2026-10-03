@@ -1,0 +1,6 @@
+# Context features + benchmarks only; never traded by the bot.
+name: benchmarks
+symbols:
+  - {symbol: SPY, layer: benchmark, category: etf}
+  - {symbol: QQQ, layer: benchmark, category: etf}
+  - {symbol: SMH, layer: benchmark, category: etf}

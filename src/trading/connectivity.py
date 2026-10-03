@@ -80,9 +80,10 @@ def check_binance(symbol: str = "NVDA") -> list[CheckResult]:
         return f"{symbol} bid {q.bid_price} x {q.bid_size} / ask {q.ask_price} x {q.ask_size}"
 
     def signed() -> str:  # needs the secret: proves signing works and the disclaimer state
-        hist = api.equity_order_history().data()
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        hist = api.equity_order_history(start_time=now_ms - 7 * 86_400_000, end_time=now_ms).data()
         rows = getattr(hist, "rows", None) or []
-        return f"signed request ok, {len(rows)} past stock orders"
+        return f"signed request ok, {len(rows)} stock orders in the last 7 days"
 
     return [
         _run("binance.exchange_info", exchange_info),

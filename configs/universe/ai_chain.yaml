@@ -1,0 +1,54 @@
+# AI-chain trading universe. Source of truth; mirrored in docs/architecture/data.md §2.
+# layer = position in the AI chain (research/AIChain.md); category = coarse group.
+name: ai_chain
+symbols:
+  - {symbol: NVDA,  layer: compute,            category: semis}
+  - {symbol: AMD,   layer: compute,            category: semis}
+  - {symbol: AVGO,  layer: compute,            category: semis}
+  - {symbol: MRVL,  layer: compute,            category: semis}
+  - {symbol: QCOM,  layer: compute,            category: semis}
+  - {symbol: INTC,  layer: compute,            category: semis}
+  - {symbol: ARM,   layer: compute,            category: semis, active_from: 2023-09-14}
+  - {symbol: MPWR,  layer: compute,            category: semis}
+  - {symbol: SNPS,  layer: eda,                category: semis}
+  - {symbol: CDNS,  layer: eda,                category: semis}
+  - {symbol: ASML,  layer: equipment,          category: semis}
+  - {symbol: AMAT,  layer: equipment,          category: semis}
+  - {symbol: LRCX,  layer: equipment,          category: semis}
+  - {symbol: KLAC,  layer: equipment,          category: semis}
+  - {symbol: TER,   layer: equipment,          category: semis}
+  - {symbol: TSM,   layer: foundry_packaging,  category: semis}
+  - {symbol: ASX,   layer: foundry_packaging,  category: semis}
+  - {symbol: AMKR,  layer: foundry_packaging,  category: semis}
+  - {symbol: MU,    layer: memory,             category: semis}
+  - {symbol: ANET,  layer: networking_optical, category: hardware}
+  - {symbol: COHR,  layer: networking_optical, category: hardware}
+  - {symbol: LITE,  layer: networking_optical, category: hardware}
+  - {symbol: FN,    layer: networking_optical, category: hardware}
+  - {symbol: CIEN,  layer: networking_optical, category: hardware}
+  - {symbol: CRDO,  layer: networking_optical, category: hardware, active_from: 2022-01-27}
+  - {symbol: ALAB,  layer: networking_optical, category: hardware, active_from: 2024-03-20}
+  - {symbol: DELL,  layer: servers,            category: hardware}
+  - {symbol: SMCI,  layer: servers,            category: hardware}
+  - {symbol: HPE,   layer: servers,            category: hardware}
+  - {symbol: CLS,   layer: servers,            category: hardware}
+  - {symbol: VRT,   layer: power_cooling,      category: infra}
+  - {symbol: ETN,   layer: power_cooling,      category: infra}
+  - {symbol: GEV,   layer: power_cooling,      category: infra, active_from: 2024-04-02}
+  - {symbol: TT,    layer: power_cooling,      category: infra}
+  - {symbol: EQIX,  layer: data_center,        category: infra}
+  - {symbol: DLR,   layer: data_center,        category: infra}
+  - {symbol: CRWV,  layer: data_center,        category: infra, active_from: 2025-03-28}
+  - {symbol: MSFT,  layer: cloud,              category: cloud_software}
+  - {symbol: AMZN,  layer: cloud,              category: cloud_software}
+  - {symbol: GOOGL, layer: cloud,              category: cloud_software}
+  - {symbol: META,  layer: cloud,              category: cloud_software}
+  - {symbol: ORCL,  layer: cloud,              category: cloud_software}
+  - {symbol: PLTR,  layer: ai_software,        category: cloud_software}
+  - {symbol: SNOW,  layer: ai_software,        category: cloud_software}
+  - {symbol: DDOG,  layer: ai_software,        category: cloud_software}
+  - {symbol: MDB,   layer: ai_software,        category: cloud_software}
+  - {symbol: NET,   layer: ai_software,        category: cloud_software}
+  - {symbol: NOW,   layer: ai_software,        category: cloud_software}
+  - {symbol: CRM,   layer: ai_software,        category: cloud_software}
+  - {symbol: ADBE,  layer: ai_software,        category: cloud_software}
