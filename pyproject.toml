@@ -1,0 +1,18 @@
+[project]
+name = "trading"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "alpaca-py>=0.44.0",
+    "binance-sdk-stocks>=1.3.0",
+    "pydantic-settings>=2.15.0",
+    "typer>=0.27.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[project.scripts]
+trading = "trading.cli:app"
