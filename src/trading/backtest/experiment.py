@@ -23,10 +23,13 @@ from trading.universe.api import get_universe
 BAR_COLS = ["symbol", "ts", "session_date", "bar_idx", "n_bars", "open", "close", "has_trade", "is_last_bar"]
 
 
-def build_dataset(cfg: dict, log=print) -> tuple[pl.DataFrame, pl.DataFrame]:
+def build_dataset(cfg: dict, log=print, reuse: bool = False) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Returns (bars for all symbols, modelling dataset for tradable stocks)."""
     bench = cfg["benchmarks"]
     bars = load_5m()
+    cached = DATA_DIR / "features" / "dataset_v1.parquet"
+    if reuse and cached.exists():
+        return bars, pl.read_parquet(cached)
     log(f"bars: {bars.height:,} rows, {bars['symbol'].n_unique()} symbols, "
         f"{bars['session_date'].min()} → {bars['session_date'].max()}")
     feats = build_and_store(bars, bench)
@@ -67,12 +70,15 @@ def _simulate(bars, preds, strat: StrategyConfig, costs: CostModel) -> tuple[dic
     return metrics(daily, strat.starting_cash, res["trades"], res["fees"]), daily, res["trades"]
 
 
-def run_experiment(name: str = "baseline_v1", log=print) -> dict:
+def run_experiment(name: str = "baseline_v1", log=print, reuse_dataset: bool = False) -> dict:
     cfg = yaml.safe_load((CONFIG_DIR / "experiments" / f"{name}.yaml").read_text())
     out_dir = ensure_dir(ARTIFACTS_DIR / "runs" / name)
     t0 = time.time()
-    bars, ds = build_dataset(cfg, log)
+    bars, ds = build_dataset(cfg, log, reuse_dataset)
     train_end, val_end = cfg["periods"]["train_end"], cfg["periods"]["validation_end"]
+    # Experiment: optionally train only on recent history (e.g. from 2023, the start of the AI rally).
+    train_start = cfg["periods"].get("train_start", date(1900, 1, 1))
+    hist = ds.filter(pl.col("session_date") >= train_start)
     cash = float(cfg["starting_cash"])
     feats = list(FEATURE_COLUMNS)
     stock_bars = bars.filter(~pl.col("symbol").is_in(cfg["benchmarks"])).select(BAR_COLS)
@@ -88,9 +94,11 @@ def run_experiment(name: str = "baseline_v1", log=print) -> dict:
     val_costs = _costs(bars, train_end)
     grid = cfg["grid"]
     stage_a, best = [], None
-    for h in cfg["horizons"]:
+    val_file = out_dir / "validation.json"
+    done_a = json.loads(val_file.read_text()) if val_file.exists() else None
+    for h in ([] if done_a else cfg["horizons"]):
         target = f"fwd_{h}"
-        tr = trainable(ds.filter(pl.col("session_date") <= train_end), target)
+        tr = trainable(hist.filter(pl.col("session_date") <= train_end), target)
         va = trainable(ds.filter((pl.col("session_date") > train_end) & (pl.col("session_date") <= val_end)), target)
         t1 = time.time()
         model = train(tr, feats, target)
@@ -99,6 +107,7 @@ def run_experiment(name: str = "baseline_v1", log=print) -> dict:
         log(f"[h={h}] train {tr.height:,} rows in {time.time() - t1:.0f}s | val IC {diag['ic_mean']:.4f} "
             f"| top 1% fwd {diag['top0.99']['mean_fwd'] * 1e4:.1f} bp (cut {diag['top0.99']['pred_cut'] * 1e4:.1f} bp)")
         preds = va.select("symbol", "ts").with_columns(pl.Series("pred", p))
+        atomic_write_parquet(preds, out_dir / f"val_predictions_h{h}.parquet")
         rows = []
         for thr, mp, ext in itertools.product(grid["threshold"], grid["max_positions"], grid["extend"]):
             strat = StrategyConfig(horizon=h, threshold=thr, max_positions=mp, extend=ext, starting_cash=cash)
@@ -110,13 +119,16 @@ def run_experiment(name: str = "baseline_v1", log=print) -> dict:
         top = max(rows, key=lambda r: r["total_return"] if r["trades"] >= cfg["min_validation_trades"] else -9)
         log(f"[h={h}] best on validation: thr {top['threshold']} maxpos {top['max_positions']} extend {top['extend']} "
             f"→ {top['total_return']:+.1%}, {top['trades']} trades")
-    result["validation"] = {"by_horizon": stage_a, "selected": best}
-    val_all = stock_bars.filter((pl.col("session_date") > train_end) & (pl.col("session_date") <= val_end))
-    result["validation"]["benchmarks"] = _benchmarks(bars, cfg, train_end, val_end, cash, val_costs)[0]
-    if best is None:
-        raise RuntimeError("no configuration reached the minimum number of validation trades")
+    if done_a:
+        result["validation"], best = done_a, done_a["selected"]
+        log("validation stage reused from validation.json")
+    else:
+        result["validation"] = {"by_horizon": stage_a, "selected": best}
+        result["validation"]["benchmarks"] = _benchmarks(bars, cfg, train_end, val_end, cash, val_costs)[0]
+        if best is None:
+            raise RuntimeError("no configuration reached the minimum number of validation trades")
+        val_file.write_text(json.dumps(result["validation"], indent=1, default=str))
     log(f"selected on validation: {best}")
-    (out_dir / "validation.json").write_text(json.dumps(result["validation"], indent=1, default=str))
 
     # ---- Stage B: frozen design, run once on the 2026 holdout -------------------------------
     h, target = best["horizon"], f"fwd_{best['horizon']}"
@@ -125,25 +137,30 @@ def run_experiment(name: str = "baseline_v1", log=print) -> dict:
     hold_ds = ds.filter(pl.col("session_date") > val_end)
     hold_pred: dict[str, pl.DataFrame] = {}
     if "static" in cfg["retrain"]:
-        model = train(trainable(ds.filter(pl.col("session_date") <= val_end), target), feats, target)
+        f = out_dir / "predictions_static.parquet"
         rows_ = trainable(hold_ds, target)
-        hold_pred["static"] = rows_.select("symbol", "ts").with_columns(pl.Series("pred", predict(model, rows_, feats)))
+        if not f.exists():  # every finished model is saved at once, so a crash never costs training time
+            model = train(trainable(hist.filter(pl.col("session_date") <= val_end), target), feats, target)
+            atomic_write_parquet(rows_.select("symbol", "ts").with_columns(pl.Series("pred", predict(model, rows_, feats))), f)
+        hold_pred["static"] = pl.read_parquet(f)
         result["holdout_diagnostics_static"] = diagnostics(rows_, hold_pred["static"]["pred"].to_numpy(), target)
-        log("static model trained")
+        log("static model ready")
     if "monthly" in cfg["retrain"]:
         parts = []
         months = hold_ds.select(pl.col("session_date").dt.truncate("1mo").alias("m")).unique().sort("m")["m"].to_list()
         for m in months:
-            model = train(trainable(ds.filter(pl.col("session_date") < m), target), feats, target)
-            rows_ = trainable(hold_ds.filter(pl.col("session_date").dt.truncate("1mo") == m), target)
-            parts.append(rows_.select("symbol", "ts").with_columns(pl.Series("pred", predict(model, rows_, feats))))
-            log(f"monthly retrain {m}: predicted {rows_.height:,} rows")
+            f = out_dir / f"predictions_monthly_{m:%Y-%m}.parquet"
+            if not f.exists():
+                model = train(trainable(hist.filter(pl.col("session_date") < m), target), feats, target)
+                rows_ = trainable(hold_ds.filter(pl.col("session_date").dt.truncate("1mo") == m), target)
+                atomic_write_parquet(rows_.select("symbol", "ts").with_columns(pl.Series("pred", predict(model, rows_, feats))), f)
+            parts.append(pl.read_parquet(f))
+            log(f"monthly retrain {m:%Y-%m}: ready ({parts[-1].height:,} rows)")
         hold_pred["monthly"] = pl.concat(parts)
 
     hold_costs = _costs(bars, val_end)
     holdout = {}
     for mode, preds in hold_pred.items():
-        atomic_write_parquet(preds, out_dir / f"predictions_{mode}.parquet")
         variants = {
             "base": (strat, hold_costs),
             "costs_2x": (strat, _costs(bars, val_end, 2.0)),

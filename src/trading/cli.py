@@ -42,11 +42,11 @@ def data_clean() -> None:
 
 
 @app.command("experiment")
-def experiment(name: str = "baseline_v1") -> None:
+def experiment(name: str = "baseline_v1", reuse_dataset: bool = False) -> None:
     """Run an end-to-end experiment: features → train → validate → holdout → benchmarks."""
     from trading.backtest.experiment import run_experiment
 
-    run_experiment(name, log=lambda m: typer.echo(m))
+    run_experiment(name, log=lambda m: typer.echo(m), reuse_dataset=reuse_dataset)
 
 
 @app.command("report")

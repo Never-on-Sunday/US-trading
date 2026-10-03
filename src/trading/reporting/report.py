@@ -4,6 +4,7 @@ import html
 import json
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
 from trading.shared.storage import ARTIFACTS_DIR
@@ -26,11 +27,30 @@ def _usd(x: float) -> str:
     return f"${x:,.0f}"
 
 
+def _signed_usd(x: float, digits: int = 0) -> str:
+    return f"{'−' if x < 0 else '+'}${abs(x):,.{digits}f}"
+
+
 def _row(cells: list[str], tag: str = "td") -> str:
     return "<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in cells) + "</tr>"
 
 
-def build_report(name: str = "baseline_v1") -> Path:
+def _trade_stats(path: Path) -> dict:
+    """Trade-level evidence: how big is the average edge compared with its noise?"""
+    t = pl.read_parquet(path)
+    pnl = (t["proceeds"] - t["cost"]).to_numpy()
+    ret = pnl / t["cost"].to_numpy()
+    rng = np.random.default_rng(1)
+    boot = np.array([rng.choice(pnl, len(pnl)).sum() for _ in range(5000)])  # resample trades with replacement
+    return {
+        "n": len(pnl), "days": t.select(pl.col("entry_ts").dt.date().n_unique()).item(),
+        "avg": float(ret.mean()), "win": float((ret > 0).mean()),
+        "hold_min": float((t["exit_ts"] - t["entry_ts"]).dt.total_minutes().mean()),
+        "lo": float(np.quantile(boot, 0.05)), "hi": float(np.quantile(boot, 0.95)), "p_loss": float((boot < 0).mean()),
+    }
+
+
+def build_report(name: str = "baseline_v1", compare: tuple[str, ...] = ("train_from_2023",)) -> Path:
     run = ARTIFACTS_DIR / "runs" / name
     res = json.loads((run / "result.json").read_text())
     cash = float(res["config"]["starting_cash"])
@@ -47,22 +67,47 @@ def build_report(name: str = "baseline_v1") -> Path:
                        "dates": [str(x) for x in d["session_date"]], "values": [round(v, 2) for v in d["equity"]]})
 
     modes = [m for m in ("static", "monthly") if m in hold]
-    main_mode = max(modes, key=lambda m: hold[m]["base"]["total_return"])
-    bot = hold[main_mode]["base"]
-    best_bench_key = max(bench, key=lambda k: bench[k]["total_return"])
-    best_bench = bench[best_bench_key]
     bench_names = {"SPY": "SPY", "QQQ": "QQQ", "SMH": "SMH", "basket_equal_weight": "Buy & hold all 50 stocks"}
     mode_names = {"static": "Bot — trained once", "monthly": "Bot — retrained monthly"}
-    beat = [bench_names[k] for k, v in bench.items() if bot["total_return"] > v["total_return"]]
-
-    if bot["total_return"] > best_bench["total_return"]:
-        verdict = "The bot beat every benchmark in the test period."
-    elif bot["total_return"] > 0 and beat:
-        verdict = f"The bot made money but only beat {', '.join(beat)}."
-    elif bot["total_return"] > 0:
-        verdict = "The bot made a small profit but every buy-and-hold benchmark made more."
+    rets = [hold[m]["base"]["total_return"] for m in modes]
+    best_bench_key = max(bench, key=lambda k: bench[k]["total_return"])
+    best_bench = bench[best_bench_key]
+    beaten = [bench_names[k] for k, v in bench.items() if min(rets) > v["total_return"]]
+    never = [bench_names[k] for k, v in bench.items() if max(rets) < v["total_return"]]
+    if not never:
+        verdict = "At least one bot version beat every benchmark in the test period."
+    elif min(rets) > 0:
+        verdict = (f"Both bot versions made money after fees ({_pct(min(rets))} and {_pct(max(rets))}), "
+                   f"but neither came close to {' or '.join(never)} ({_pct(best_bench['total_return'])} for {bench_names[best_bench_key]}).")
     else:
-        verdict = "The bot lost money after fees, while buy-and-hold benchmarks did better."
+        verdict = f"The bot did not reliably make money after fees, and was far behind {' and '.join(never)}."
+    stats = {m: _trade_stats(run / f"trades_{m}.parquet") for m in modes}
+    tiles = "".join(
+        f'<div class="tile"><div class="k">{mode_names[m]}</div><div class="v">{_usd(hold[m]["base"]["final_equity"])}</div>'
+        f'<div class="n">{_pct(hold[m]["base"]["total_return"])} after all costs · {hold[m]["base"]["trades"]} trades</div></div>'
+        for m in modes
+    ) + (
+        f'<div class="tile"><div class="k">Best benchmark: {bench_names[best_bench_key]}</div><div class="v">{_usd(best_bench["final_equity"])}</div>'
+        f'<div class="n">{_pct(best_bench["total_return"])}, one buy, then hold</div></div>'
+        f'<div class="tile"><div class="k">Fees the bot paid</div><div class="v">{_usd(hold[modes[0]]["base"]["fees"])}</div>'
+        f'<div class="n">{hold[modes[0]]["base"]["fees"] / cash:.0%} of the starting money (trained-once version)</div></div>'
+    )
+    stat_rows = [[mode_names[m], str(st["n"]), f"{st['days']} of {hold[m]['base']['days']}", f"{st['hold_min'] / 60:.1f} h",
+                  f"{st['avg'] * 100:+.2f}%", f"{st['win']:.0%}", f"{_signed_usd(st['lo'])} to {_signed_usd(st['hi'])}", f"{st['p_loss']:.0%}"]
+                 for m, st in stats.items()]
+    main_mode = modes[0]
+
+    cmp_rows = []
+    for other in (name, *compare):
+        f = ARTIFACTS_DIR / "runs" / other / "result.json"
+        if not f.exists():
+            continue
+        o = json.loads(f.read_text())
+        osel = o["validation"]["selected"]
+        start = o["config"]["periods"].get("train_start", o["data"]["first_session"])
+        cmp_rows.append([f"Train from {str(start)[:7]}", f"{osel['horizon'] * 5} min, ≥ {osel['threshold'] * 100:.1f}%, {osel['max_positions']} positions",
+                         _pct(osel["total_return"]), *[_pct(o["holdout"][m]["base"]["total_return"]) for m in ("static", "monthly")],
+                         *[_pct(o["holdout"][m]["costs_2x"]["total_return"]) for m in ("static", "monthly")]])
 
     perf_rows = []
     for m in modes:
@@ -98,18 +143,14 @@ def build_report(name: str = "baseline_v1") -> Path:
               .sort("pnl", descending=True))
         pick = pl.concat([by.head(5), by.tail(5)]).unique("symbol", maintain_order=True)
         trades_html = ("<table><thead>" + _row(["Stock", "Trades", "Net profit", "Win rate"], "th") + "</thead><tbody>"
-                       + "".join(_row([s, str(n), f"${p:+,.2f}", f"{w:.0%}"]) for s, n, p, w in pick.iter_rows())
+                       + "".join(_row([s, str(n), _signed_usd(p, 2), f"{w:.0%}"]) for s, n, p, w in pick.iter_rows())
                        + "</tbody></table>")
 
     d = res["data"]
     page = TEMPLATE.format(
         title=html.escape(f"First experiment: {name}"), verdict=html.escape(verdict),
         period=f"{d['holdout_start']} → {d['holdout_end']}",
-        bot_final=_usd(bot["final_equity"]), bot_ret=_pct(bot["total_return"]), bot_label=mode_names[main_mode],
-        bench_final=_usd(best_bench["final_equity"]), bench_ret=_pct(best_bench["total_return"]),
-        bench_label=bench_names[best_bench_key], fees=_usd(bot["fees"]), trades=f"{bot['trades']:,}",
-        fees_pct=f"{bot['fees'] / cash:.0%}", win=f"{bot['win_rate']:.0%}",
-        avg_gross=f"{bot['avg_trade_gross_pct'] * 100:+.3f}%", avg_net=f"{bot['avg_trade_net_pct'] * 100:+.3f}%",
+        tiles=tiles, stat_table="".join(_row(r) for r in stat_rows), cmp_table="".join(_row(r) for r in cmp_rows),
         perf_table="".join(_row(r) for r in perf_rows),
         cost_head=_row(["Scenario"] + [mode_names[m] for m in modes], "th"),
         cost_table="".join(_row(r) for r in cost_rows),
@@ -162,12 +203,7 @@ ul {{ padding-left:20px; margin:0 0 12px; }} li {{ margin-bottom:6px; }} code {{
 <h1>Can the bot beat buying an ETF?</h1>
 <p class="sub">First end-to-end experiment · {cash} starting money · test period {period} · Binance Stocks fees</p>
 <p class="verdict">{verdict}</p>
-<div class="tiles">
-  <div class="tile"><div class="k">{bot_label}</div><div class="v">{bot_final}</div><div class="n">{bot_ret} after all costs</div></div>
-  <div class="tile"><div class="k">Best benchmark: {bench_label}</div><div class="v">{bench_final}</div><div class="n">{bench_ret}, one buy, then hold</div></div>
-  <div class="tile"><div class="k">Fees the bot paid</div><div class="v">{fees}</div><div class="n">{fees_pct} of the starting money, over {trades} trades</div></div>
-  <div class="tile"><div class="k">Average trade</div><div class="v">{avg_net}</div><div class="n">after costs ({avg_gross} before) · {win} of trades won</div></div>
-</div>
+<div class="tiles">{tiles}</div>
 
 <h2>Account value over the test period</h2>
 <div class="card"><div class="legend" id="legend"></div><div id="chart"><svg id="svg" viewBox="0 0 880 380" role="img"
@@ -178,6 +214,16 @@ ul {{ padding-left:20px; margin:0 0 12px; }} li {{ margin-bottom:6px; }} code {{
 <tbody>{perf_table}</tbody></table></div>
 <p class="sub" style="margin-top:8px">Sharpe is return per unit of risk (above 1 is good). Worst drop is the largest fall from a peak. Benchmarks pay the same Binance fee and spread on their one purchase.</p>
 
+<h2>Could this be luck?</h2>
+<div class="card scroll"><table><thead><tr><th>Version</th><th>Trades</th><th>Days traded</th><th>Avg holding</th><th>Avg trade after costs</th><th>Trades won</th><th>Likely profit range</th><th>Chance of a loss</th></tr></thead>
+<tbody>{stat_table}</tbody></table></div>
+<p class="sub" style="margin-top:8px">"Likely profit range" re-draws the same trades at random 5,000 times and shows where 90% of outcomes land. A range that includes losses means the profit is not yet distinguishable from luck.</p>
+
+<h2>Experiment: train only from 2023</h2>
+<p>Same design, but the model learns only from the AI-rally years. Each row was tuned on 2025 separately, then tested once on 2026.</p>
+<div class="card scroll"><table><thead><tr><th>Training data</th><th>Setting chosen on 2025</th><th>2025 return</th><th>2026, trained once</th><th>2026, retrained monthly</th><th>2026 at 2× costs, once</th><th>2026 at 2× costs, monthly</th></tr></thead>
+<tbody>{cmp_table}</tbody></table></div>
+
 <h2>How much do costs matter?</h2>
 <div class="card scroll"><table><thead>{cost_head}</thead><tbody>{cost_table}</tbody></table></div>
 <p class="sub" style="margin-top:8px">Realistic costs are Binance's fee of max($0.35, 0.10%) per order, plus half the bid-ask spread and 0.01% slippage on each fill.</p>
@@ -186,7 +232,7 @@ ul {{ padding-left:20px; margin:0 0 12px; }} li {{ margin-bottom:6px; }} code {{
 <p>All settings were chosen on 2025 data only, using a model trained on 2021–2024. The 2026 test above was then run once.</p>
 <div class="card scroll"><table><thead><tr><th>Holding time</th><th>Rank correlation</th><th>Top 1% of signals earned</th><th>Profitable settings</th><th>Best setting in 2025</th></tr></thead>
 <tbody>{val_table}</tbody></table></div>
-<p class="sub" style="margin-top:8px">Rank correlation measures how well predictions order the stocks (0 = random; 0.02–0.05 is typical for a usable intraday signal). "Top 1% of signals earned" is the average move after the model's strongest signals, before costs, in basis points (1 bp = 0.01%); a round trip costs about 22–30 bp.</p>
+<p class="sub" style="margin-top:8px">Rank correlation measures how well predictions order the stocks (0 = random; 0.02–0.05 is typical for a usable intraday signal). "Top 1% of signals earned" is the average move after the model's strongest signals, before costs, in basis points (1 bp = 0.01%); a round trip costs about 22–30 bp. "Profitable settings" counts the tried settings with enough trades that made money in 2025.</p>
 <p><b>Chosen setting:</b> {sel}. In 2025 it returned {sel_ret} over {sel_trades} trades. For comparison, buy and hold in 2025: {val_bench}.</p>
 
 <h2>Where the bot made and lost money</h2>

@@ -93,7 +93,7 @@ def run(panel: Panel, cfg: StrategyConfig, costs: CostModel) -> dict:
                 cash += gross - fee
             else:
                 unsettled += gross - fee
-            trades.append((panel.symbols[j], panel.ts[entry_bar], panel.ts[i + 1], entry_px, px, cost, gross - fee))
+            trades.append((panel.symbols[j], entry_bar, i + 1, entry_px, px, cost, gross - fee))
             del pos[j]
 
         if force_flat or b > nb - 2 - cfg.no_entry_last_bars:
@@ -122,5 +122,12 @@ def run(panel: Panel, cfg: StrategyConfig, costs: CostModel) -> dict:
             fees_paid += fee
             slots -= 1
 
-    tr = pl.DataFrame(trades, schema=["symbol", "entry_ts", "exit_ts", "entry_px", "exit_px", "cost", "proceeds"], orient="row")
+    cols = list(zip(*trades)) if trades else [[] for _ in range(7)]
+    ts = pl.Series("ts", panel.ts)  # bar indices → timestamps (raw numpy datetimes in tuples become Object dtype)
+    tr = pl.DataFrame({
+        "symbol": pl.Series(cols[0], dtype=pl.Utf8),
+        "entry_ts": ts.gather(pl.Series(cols[1], dtype=pl.Int64)), "exit_ts": ts.gather(pl.Series(cols[2], dtype=pl.Int64)),
+        "entry_px": pl.Series(cols[3], dtype=pl.Float64), "exit_px": pl.Series(cols[4], dtype=pl.Float64),
+        "cost": pl.Series(cols[5], dtype=pl.Float64), "proceeds": pl.Series(cols[6], dtype=pl.Float64),
+    })
     return {"ts": panel.ts, "session": panel.session, "equity": equity, "trades": tr, "fees": fees_paid}

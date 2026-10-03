@@ -1,0 +1,17 @@
+# Experiment: train only on the AI-rally era (ChatGPT launched Nov 2022). Same design as baseline_v1 otherwise.
+name: train_from_2023
+universe: ai_chain
+benchmarks: [SPY, QQQ, SMH]
+starting_cash: 2000
+periods:
+  train_start: 2023-01-01
+  train_end: 2024-12-31       # train: 2023-01 → 2024-12
+  validation_end: 2025-12-31  # validation: 2025 (all tuning happens here)
+  # holdout: 2026-01-02 → latest data (run once with the frozen design)
+horizons: [6, 12, 24, 72]     # holding period candidates in 5m bars: 30 min, 1 h, 2 h, ~rest of day
+grid:                          # strategy settings tried on validation only
+  threshold: [0.001, 0.0015, 0.002, 0.003, 0.004, 0.006]
+  max_positions: [2, 4, 5]
+  extend: [true, false]
+min_validation_trades: 40
+retrain: [static, monthly]    # Experiment: retraining cadence on the holdout

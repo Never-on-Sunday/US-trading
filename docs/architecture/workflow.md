@@ -8,7 +8,7 @@ Source of requirements: [idea.md](idea.md). Data sources, universe and storage: 
 
 **Data split by job:** **Alpaca** supplies historical data for training and backtesting. **Binance** supplies live market data and executes orders. The two meet at the **5-minute bar**, because Binance's live candle stream has no 1-minute interval (see *Binance Stocks API*).
 
-**Tech stack:** Python 3.12, `uv`, `polars` + `pyarrow` (Parquet), `duckdb`, `alpaca-py`, `exchange_calendars`, `scikit-learn`, `xgboost`, `lightgbm`, `optuna`, `pydantic`, `typer`, `binance-sdk-stocks` (official Binance Stocks SDK, `Future`), `pytest`, `import-linter`, `ruff`.
+**Tech stack:** Python 3.12, `uv`, `polars` + `pyarrow` (Parquet), `duckdb`, `alpaca-py`, `scikit-learn` (HistGradientBoosting; see *Implementation status*), `optuna` (planned), `pydantic`, `typer`, `binance-sdk-stocks` (official Binance Stocks SDK, `Future`), `pytest`, `import-linter`, `ruff`.
 
 ---
 
@@ -32,9 +32,10 @@ trading/
 │       └── retrain_cadence.yaml    # Experiment: static vs monthly vs weekly retraining
 │
 ├── data/                           # gitignored; owned by market_data/ and features/
-│   ├── raw/bars_1m/symbol=NVDA/year=2024/part-0.parquet
+│   ├── raw/bars_1m/month=2024-06.parquet   # one file per month, all symbols; raw/_manifest.json tracks completed months
+│   ├── raw/calendar.parquet                # trading sessions and half-days (from Alpaca)
 │   ├── raw/corporate_actions/
-│   ├── clean/bars_1m/symbol=.../year=.../part-0.parquet
+│   ├── clean/bars_5m/symbol=NVDA.parquet   # regular hours, full 5m grid, has_trade flag
 │   ├── features/<feature_set>@<version>/symbol=.../part-0.parquet
 │   └── catalog.duckdb              # SQL views over the parquet files for ad-hoc analysis
 │
@@ -155,6 +156,33 @@ trading/
     ├── workflow.md
     └── research/
 ```
+
+### Implementation status (2026-10-03)
+
+The first full pass of Steps 0–9 is built and has been run end to end. Results: [../experiments/001-baseline.md](../experiments/001-baseline.md).
+
+| Module | Status | Notes |
+|---|---|---|
+| `shared/`, `universe/` | Built | Config, secrets, storage paths, universe YAML |
+| `market_data/` | Built | `providers/alpaca.py`, `ingest.py` (resumable, by month), `resample.py` (1m → clean 5m). `quality.py` is still a manual check. |
+| `features/`, `labeling/` | Built | 52 features in `features/builders.py`; forward-return labels. Triple-barrier labels not built. |
+| `modeling/` | Built (one estimator) | Everything is in `modeling/api.py`. No `tuning.py` yet. |
+| `execution/cost_model.py` | Built | Binance Stocks fees + spread tiers |
+| `backtest/` | Built | `engine.py` (simulator) and `experiment.py` (train → validate → holdout, resumable) |
+| `reporting/` | Built | Metrics, benchmarks, HTML report |
+| `strategy/`, `risk/`, `portfolio/` | **Not split out yet** | Their v1 logic (entry threshold, sizing, flat-by-close, cash ledger) lives inside `backtest/engine.py`. They must be extracted before live trading so backtest and live share them. |
+| `live/`, `execution/*_broker.py` | Not built | `Future` |
+
+CLI: `trading check-connections | data-sync | data-clean | experiment --name <cfg> | report`.
+
+**What building it taught us:**
+
+1. **LightGBM and XGBoost don't run on this machine.** Both need the OpenMP library `libomp`, and Homebrew no longer supports Intel Macs. v1 uses scikit-learn's `HistGradientBoostingRegressor`, the same histogram-boosting algorithm. Because every model sits behind `modeling/api.py`, either library can be swapped in on Linux or Apple Silicon.
+2. **Raw data is stored one file per month, not per symbol and year.** A month is the unit of download, so this makes resume trivial. The clean layer is one 5-minute file per symbol. Clean 1-minute bars aren't stored, because nothing needs them: the open of the next 5-minute bar *is* the first 1-minute open after a decision.
+3. **Alpaca returns whole-number prices as JSON integers.** Parsing must force floats, or some months fail.
+4. **A failed month must be logged at once.** The first downloader hid one failure until all other months had finished.
+5. **Every trained model's predictions are saved as soon as they exist.** Monthly retraining takes about an hour, and a crash in a later step once threw that away.
+6. **Fees dominate.** Random entries lost about 30% in two months, almost all of it fees. Only the strictest entry threshold (predicted gain ≥ 0.6%) was profitable on validation, and the bot then trades on only about 1 day in 5.
 
 ### Module rules
 
