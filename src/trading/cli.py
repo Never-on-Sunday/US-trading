@@ -31,3 +31,27 @@ def data_sync(start: str = "2021-01-01", workers: int = 3) -> None:
     cal = sync_calendar(date.fromisoformat(start), datetime.now(UTC).date())
     typer.echo(f"calendar: {cal.height} sessions; {len(syms)} symbols")
     sync(syms, date.fromisoformat(start), workers=workers, log=lambda m: typer.echo(m))
+
+
+@app.command("data-clean")
+def data_clean() -> None:
+    """Raw 1m bars → clean regular-session 5m bars."""
+    from trading.market_data.api import build_clean_5m
+
+    build_clean_5m(log=lambda m: typer.echo(m))
+
+
+@app.command("experiment")
+def experiment(name: str = "baseline_v1") -> None:
+    """Run an end-to-end experiment: features → train → validate → holdout → benchmarks."""
+    from trading.backtest.experiment import run_experiment
+
+    run_experiment(name, log=lambda m: typer.echo(m))
+
+
+@app.command("report")
+def report(name: str = "baseline_v1") -> None:
+    """Build the HTML report for a finished experiment run."""
+    from trading.reporting.report import build_report
+
+    typer.echo(f"report written to {build_report(name)}")
