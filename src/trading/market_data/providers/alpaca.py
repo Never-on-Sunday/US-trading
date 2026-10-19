@@ -61,11 +61,14 @@ class AlpacaProvider:
         raise RuntimeError(f"Alpaca request failed after retries: {url} {params}")
 
     def bars(self, symbols: list[str], start: datetime, end: datetime, timeframe: str = "1Min",
-             feed: str = "sip", adjustment: str = "split") -> pl.DataFrame:
+             feed: str = "sip", adjustment: str = "split", asof: date | None = None) -> pl.DataFrame:
+        """`asof` picks which company a reused/renamed ticker means (Alpaca's default is today)."""
         params = {
             "symbols": ",".join(symbols), "timeframe": timeframe, "start": start.isoformat(),
             "end": end.isoformat(), "limit": 10000, "adjustment": adjustment, "feed": feed, "sort": "asc",
         }
+        if asof:
+            params["asof"] = asof.isoformat()
         cols: dict[str, list] = {k: [] for k in ("symbol", "t", "o", "h", "l", "c", "v", "n", "vw")}
         while True:
             body = self._get(f"{DATA_URL}/stocks/bars", params)

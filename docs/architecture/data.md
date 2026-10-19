@@ -312,3 +312,31 @@ These run in `market_data/quality.py` after every sync. Results go to `data/repo
 1. **Six `added` names** (MPWR, TER, CIEN, CRDO, ALAB, CLS): keep them, or swap for others?
 2. **Software names** (PLTR → ADBE) behave differently from hardware. Should they be in v1, or should v1 be hardware/infrastructure only (37 names) with software added as a category experiment?
 3. **Spread data:** should we sample quotes in v1 to measure real costs, or start with conservative fixed costs in `costs.yaml` and measure later?
+
+---
+
+## 9. Nasdaq-100 research dataset (20-minute bars)
+
+A second, wider dataset for research: every stock that was in the Nasdaq-100 at any time since 2016. It is separate from the AI-chain 1-minute data above and is not used by the current pipeline.
+
+| | |
+|---|---|
+| **Command** | `trading data-sync-n100 [--start 2016-01-01] [--timeframe 20Min] [--refresh]` |
+| **Membership source** | [jmccarrell/n100tickers](https://github.com/jmccarrell/n100tickers) yearly YAML files (code: `universe/nasdaq100.py`) |
+| **Coverage** | 206 tickers → 207 series, 2016-01-01 → 2026-10-16. 168 series have data from the first week of 2016. |
+| **Size** | 13.35M bars, about 315 MB. The first download took about 1 h 45 min, slowed by Alpaca's response time rather than the rate limit. |
+| **Bars** | Alpaca `20Min`, SIP feed, split-adjusted only, 04:00–20:00 ET. Only bars with trades are stored. Bars start on :00/:20/:40 in clock time, so the 09:20 ET bar straddles the open. |
+
+```text
+data/raw/nasdaq-100/
+├── membership.parquet              # ticker, joined, left (null = current member), series, asof
+├── bars_20min/series=AAPL.parquet  # symbol (= series id), ts (bar start, UTC), open, high, low, close, volume, trade_count, vwap
+├── _manifest.json                  # one entry per downloaded series → resumable
+└── sync.log
+```
+
+**Reused and renamed tickers.** Alpaca resolves a ticker to the company that holds it on the `asof` date (default: today). Each series is requested with `asof` set to the ticker's last day in the index, so it gets the company that was in the index. For example, `FB` gives Meta's history, not the company that holds FB today. When one ticker meant two companies during its membership periods, the older company gets its own series: `SNDK.2016` is the old SanDisk and `SNDK` is the new Sandisk (2026).
+
+**Duplicates.** Renamed companies appear under both tickers with the same history: FB/META, PCLN/BKNG, CTRP/TCOM. Drop one of each pair when combining the series.
+
+**Point-in-time use.** To avoid survivorship bias, filter by the membership periods: a series counts as a member on day `d` if `joined <= d < left` (or `left` is null).

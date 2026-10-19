@@ -34,6 +34,7 @@ trading/
 ├── data/                           # gitignored; owned by market_data/ and features/
 │   ├── raw/bars_1m/month=2024-06.parquet   # one file per month, all symbols; raw/_manifest.json tracks completed months
 │   ├── raw/calendar.parquet                # trading sessions and half-days (from Alpaca)
+│   ├── raw/nasdaq-100/                     # research set: all Nasdaq-100 members since 2016, 20-minute bars (data.md §9)
 │   ├── raw/corporate_actions/
 │   ├── clean/bars_5m/symbol=NVDA.parquet   # regular hours, full 5m grid, has_trade flag
 │   ├── features/<feature_set>@<version>/symbol=.../part-0.parquet
@@ -163,8 +164,8 @@ The first full pass of Steps 0–9 is built and has been run end to end. Results
 
 | Module | Status | Notes |
 |---|---|---|
-| `shared/`, `universe/` | Built | Config, secrets, storage paths, universe YAML |
-| `market_data/` | Built | `providers/alpaca.py`, `ingest.py` (resumable, by month), `resample.py` (1m → clean 5m). `quality.py` is still a manual check. |
+| `shared/`, `universe/` | Built | Config, secrets, storage paths, universe YAML. `universe/nasdaq100.py` builds Nasdaq-100 membership history. |
+| `market_data/` | Built | `providers/alpaca.py`, `ingest.py` (resumable, by month; `sync_series` downloads per series for the Nasdaq-100 set), `resample.py` (1m → clean 5m). `quality.py` is still a manual check. |
 | `features/`, `labeling/` | Built | 52 features in `features/builders.py`; forward-return labels. Triple-barrier labels not built. |
 | `modeling/` | Built (one estimator) | Everything is in `modeling/api.py`. No `tuning.py` yet. |
 | `execution/cost_model.py` | Built | Binance Stocks fees + spread tiers |
@@ -173,7 +174,7 @@ The first full pass of Steps 0–9 is built and has been run end to end. Results
 | `strategy/`, `risk/`, `portfolio/` | **Not split out yet** | Their v1 logic (entry threshold, sizing, flat-by-close, cash ledger) lives inside `backtest/engine.py`. They must be extracted before live trading so backtest and live share them. |
 | `live/`, `execution/*_broker.py` | Not built | `Future` |
 
-CLI: `trading check-connections | data-sync | data-clean | experiment --name <cfg> | report`.
+CLI: `trading check-connections | data-sync | data-sync-n100 | data-clean | experiment --name <cfg> | report`.
 
 **What building it taught us:**
 

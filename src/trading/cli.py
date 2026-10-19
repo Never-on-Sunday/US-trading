@@ -33,6 +33,31 @@ def data_sync(start: str = "2021-01-01", workers: int = 3) -> None:
     sync(syms, date.fromisoformat(start), workers=workers, log=lambda m: typer.echo(m))
 
 
+@app.command("data-sync-n100")
+def data_sync_n100(start: str = "2016-01-01", timeframe: str = "20Min", workers: int = 4,
+                   refresh: bool = False) -> None:
+    """Download bars for every stock in the Nasdaq-100 since `start` into data/raw/nasdaq-100/."""
+    from datetime import date
+
+    import polars as pl
+
+    from trading.market_data.api import resolve_series, sync_series
+    from trading.shared.storage import DATA_DIR, atomic_write_parquet
+    from trading.universe.nasdaq100 import membership
+
+    out_dir = DATA_DIR / "raw" / "nasdaq-100"
+    path = out_dir / "membership.parquet"
+    if path.exists() and not refresh:
+        series = pl.read_parquet(path)
+    else:
+        periods = membership(date.fromisoformat(start).year)
+        typer.echo(f"membership: {periods['ticker'].n_unique()} tickers, {periods.height} periods")
+        series = resolve_series(periods)
+        atomic_write_parquet(series, path)
+    sync_series(series, out_dir, date.fromisoformat(start), timeframe=timeframe, workers=workers,
+                refresh=refresh, log=lambda m: typer.echo(m))
+
+
 @app.command("data-clean")
 def data_clean() -> None:
     """Raw 1m bars → clean regular-session 5m bars."""
