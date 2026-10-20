@@ -2,8 +2,8 @@
 .venv/
 __pycache__/
 *.pyc
-data/
-artifacts/
+/data/
+/artifacts/
 .pytest_cache/
 .ruff_cache/
 
