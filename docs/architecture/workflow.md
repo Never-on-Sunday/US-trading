@@ -27,13 +27,13 @@ trading/
 │
 ├── src/trading/                # one folder per workflow step (idea_v2.md); each exposes api.py
 │   ├── data/                   # 1. DATA: Nasdaq-100 membership, Alpaca download, universe = members on each date
+│   │   └── notebook/           # inspect_raw.ipynb: look at the raw data (each step keeps its notebooks here)
 │   ├── features/               # 2. FEATURES: (to build)
 │   ├── models/                 # 3. MODELS: (to build)
 │   ├── strategy/               # 4. STRATEGY: (to build)
 │   ├── backtest/               # 5. BACKTEST: Binance Stocks cost model; engine (to build)
 │   ├── report/                 # 6. REPORT: (to build)
 │   ├── shared/                 # config, storage paths (used by every step)
-│   ├── notebook/               # exploration only (inspect_raw.ipynb: look at the raw Nasdaq-100 data)
 │   └── cli.py                  # `trading check-connections | data-sync`
 │
 └── docs/

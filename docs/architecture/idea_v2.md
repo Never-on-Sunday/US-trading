@@ -13,6 +13,8 @@
   - `raw/nasdaq-100/`
     - First find all companies had been in nasdaq 100 since 2020 (e.g. https://github.com/jmccarrell/n100tickers)
     - Second, pull data all of them since 2016
+- Inspect data:
+  - a simple .ipynb in `src/trading/data/notebook` to load and see raw data
 
 ### 2. Features
 
