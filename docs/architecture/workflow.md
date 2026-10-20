@@ -33,6 +33,7 @@ trading/
 │   ├── backtest/               # 5. BACKTEST: Binance Stocks cost model; engine (to build)
 │   ├── report/                 # 6. REPORT: (to build)
 │   ├── shared/                 # config, storage paths (used by every step)
+│   ├── notebook/               # exploration only (inspect_raw.ipynb: look at the raw Nasdaq-100 data)
 │   └── cli.py                  # `trading check-connections | data-sync`
 │
 └── docs/
