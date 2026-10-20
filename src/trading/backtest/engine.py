@@ -2,7 +2,8 @@
 
 Timeline per bar t: the bar closes → the strategy decides using predictions made from bars <= t
 → orders fill at the OPEN of bar t+1 (never at the close that produced the signal), with
-spread, slippage and fees. The bot is long-only, flat overnight.
+spread, slippage and fees. The bot is long-only, flat overnight. The engine owns execution and
+the cash ledger; every trading decision comes from the Strategy (trading.strategy.api).
 """
 
 from dataclasses import dataclass
@@ -10,20 +11,15 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-from trading.execution.cost_model import CostModel
+from trading.backtest.costs import CostModel
+from trading.strategy.api import Strategy
 
 
 @dataclass(frozen=True)
-class StrategyConfig:
-    horizon: int                 # bars to hold (5m each)
-    threshold: float             # minimum predicted return to enter
-    max_positions: int = 4
-    min_order: float = 350.0     # below this Binance's $0.35 minimum fee exceeds 0.10%
-    no_entry_last_bars: int = 6  # no new positions in the last 30 min
-    extend: bool = True          # keep a position past its horizon while the signal stays strong
-    hold_threshold: float | None = None  # defaults to threshold / 2
-    proceeds: str = "immediate"  # "immediate" | "next_day" (T+1 settlement of sale proceeds)
+class Account:
     starting_cash: float = 2000.0
+    min_order: float = 350.0     # below this Binance's $0.35 minimum fee exceeds 0.10%
+    proceeds: str = "immediate"  # "immediate" | "next_day" (T+1 settlement of sale proceeds)
 
 
 @dataclass
@@ -53,11 +49,10 @@ def make_panel(bars: pl.DataFrame, preds: pl.DataFrame) -> Panel:
                  times["n_bars"].to_numpy(), symbols, mat("open"), mat("close"), mat("pred"))
 
 
-def run(panel: Panel, cfg: StrategyConfig, costs: CostModel) -> dict:
-    hold_thr = cfg.threshold / 2 if cfg.hold_threshold is None else cfg.hold_threshold
+def run(panel: Panel, strategy: Strategy, costs: CostModel, account: Account = Account()) -> dict:
     impact = np.array([costs.price_impact(s) for s in panel.symbols])
     n_t, _ = panel.open.shape
-    cash, unsettled, fees_paid = cfg.starting_cash, 0.0, 0.0
+    cash, unsettled, fees_paid = account.starting_cash, 0.0, 0.0
     pos: dict[int, list] = {}  # symbol index -> [qty, entry_bar, cost_incl_fee, entry_px]
     last_close = np.zeros(len(panel.symbols))
     equity = np.empty(n_t)
@@ -80,32 +75,33 @@ def run(panel: Panel, cfg: StrategyConfig, costs: CostModel) -> dict:
 
         for j in list(pos):
             qty, entry_bar, cost, entry_px = pos[j]
-            if not force_flat and (i + 1 - entry_bar) < cfg.horizon:
-                continue
-            if not force_flat and cfg.extend and pred[j] >= hold_thr:
-                pos[j][1] = i + 1  # signal still strong: restart the holding clock, save two fees
-                continue
+            if not force_flat:
+                action = strategy.manage(i + 1 - entry_bar, pred[j])
+                if action == "hold":
+                    continue
+                if action == "renew":
+                    pos[j][1] = i + 1
+                    continue
             px = (nxt_open[j] if not np.isnan(nxt_open[j]) else last_close[j]) * (1 - impact[j])
             gross = qty * px
             fee = costs.fee(gross)
             fees_paid += fee
-            if cfg.proceeds == "immediate":
+            if account.proceeds == "immediate":
                 cash += gross - fee
             else:
                 unsettled += gross - fee
             trades.append((panel.symbols[j], entry_bar, i + 1, entry_px, px, cost, gross - fee))
             del pos[j]
 
-        if force_flat or b > nb - 2 - cfg.no_entry_last_bars:
+        if force_flat or not strategy.can_enter(b, nb):
             continue
-        slots = cfg.max_positions - len(pos)
+        slots = strategy.max_positions - len(pos)
         if slots <= 0:
             continue
-        cand = np.where((pred >= cfg.threshold) & ~np.isnan(nxt_open))[0]
+        cand = strategy.rank_entries(pred, ~np.isnan(nxt_open))
         if cand.size == 0:
             continue
-        cand = cand[np.argsort(-pred[cand])]
-        target = equity[i] / cfg.max_positions
+        target = strategy.target_notional(equity[i])
         for j in cand:
             if slots <= 0:
                 break
@@ -114,7 +110,7 @@ def run(panel: Panel, cfg: StrategyConfig, costs: CostModel) -> dict:
             budget = min(target, cash)
             notional = budget / (1 + costs.fee_rate * costs.multiplier)
             fee = costs.fee(notional)
-            if notional < cfg.min_order or notional + fee > cash + 1e-9:
+            if notional < account.min_order or notional + fee > cash + 1e-9:
                 break
             px = nxt_open[j] * (1 + impact[j])
             pos[j] = [notional / px, i + 1, notional + fee, px]

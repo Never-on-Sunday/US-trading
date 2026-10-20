@@ -1,4 +1,7 @@
-"""End-to-end experiment: dataset → train → tune on validation → one holdout run → benchmarks."""
+"""End-to-end experiment, chaining the workflow steps: data → features → models → strategy → backtest → report.
+
+One config in configs/experiments/ = one run: dataset → train → tune on validation → one holdout run → benchmarks.
+"""
 
 import itertools
 import json
@@ -9,16 +12,19 @@ import numpy as np
 import polars as pl
 import yaml
 
-from trading.backtest.engine import StrategyConfig, make_panel, run
-from trading.execution.cost_model import CostModel, spread_tiers
-from trading.features.api import FEATURE_COLUMNS, build_and_store
-from trading.labeling.api import make_labels
-from trading.market_data.api import load_5m
-from trading.modeling.api import ModelSpec, diagnostics, predict, train
-from trading.reporting.benchmarks import buy_and_hold
-from trading.reporting.performance import daily_equity, metrics
-from trading.shared.storage import ARTIFACTS_DIR, CONFIG_DIR, DATA_DIR, atomic_write_parquet, ensure_dir
-from trading.universe.api import get_universe
+from trading.backtest.api import Account, CostModel, make_panel, run, spread_tiers
+from trading.data.api import get_universe, load_5m
+from trading.features.api import FEATURE_COLUMNS, build_and_store, make_labels
+from trading.models.api import diagnostics, predict, train
+from trading.report.api import buy_and_hold, daily_equity, metrics
+from trading.shared.storage import (
+    ARTIFACTS_DIR,
+    CONFIG_DIR,
+    DATA_DIR,
+    atomic_write_parquet,
+    ensure_dir,
+)
+from trading.strategy.api import Strategy, make_strategy
 
 BAR_COLS = ["symbol", "ts", "session_date", "bar_idx", "n_bars", "open", "close", "has_trade", "is_last_bar"]
 
@@ -64,10 +70,10 @@ def _costs(bars: pl.DataFrame, upto: date, multiplier: float = 1.0) -> CostModel
     return CostModel(half_spread_bps=spread_tiers(dict(dv.iter_rows())), multiplier=multiplier)
 
 
-def _simulate(bars, preds, strat: StrategyConfig, costs: CostModel) -> tuple[dict, pl.DataFrame, pl.DataFrame]:
-    res = run(make_panel(bars, preds), strat, costs)
+def _simulate(bars, preds, strat: Strategy, costs: CostModel, account: Account) -> tuple[dict, pl.DataFrame, pl.DataFrame]:
+    res = run(make_panel(bars, preds), strat, costs, account)
     daily = daily_equity(res["ts"], res["session"], res["equity"])
-    return metrics(daily, strat.starting_cash, res["trades"], res["fees"]), daily, res["trades"]
+    return metrics(daily, account.starting_cash, res["trades"], res["fees"]), daily, res["trades"]
 
 
 def run_experiment(name: str = "baseline_v1", log=print, reuse_dataset: bool = False) -> dict:
@@ -80,6 +86,8 @@ def run_experiment(name: str = "baseline_v1", log=print, reuse_dataset: bool = F
     train_start = cfg["periods"].get("train_start", date(1900, 1, 1))
     hist = ds.filter(pl.col("session_date") >= train_start)
     cash = float(cfg["starting_cash"])
+    account = Account(starting_cash=cash)
+    strategy_name = cfg.get("strategy", "threshold")
     feats = list(FEATURE_COLUMNS)
     stock_bars = bars.filter(~pl.col("symbol").is_in(cfg["benchmarks"])).select(BAR_COLS)
     val_bars = stock_bars.filter((pl.col("session_date") > train_end) & (pl.col("session_date") <= val_end))
@@ -110,8 +118,8 @@ def run_experiment(name: str = "baseline_v1", log=print, reuse_dataset: bool = F
         atomic_write_parquet(preds, out_dir / f"val_predictions_h{h}.parquet")
         rows = []
         for thr, mp, ext in itertools.product(grid["threshold"], grid["max_positions"], grid["extend"]):
-            strat = StrategyConfig(horizon=h, threshold=thr, max_positions=mp, extend=ext, starting_cash=cash)
-            m, _, _ = _simulate(val_bars, preds, strat, val_costs)
+            strat = make_strategy(strategy_name, horizon=h, threshold=thr, max_positions=mp, extend=ext)
+            m, _, _ = _simulate(val_bars, preds, strat, val_costs, account)
             rows.append({"horizon": h, "threshold": thr, "max_positions": mp, "extend": ext, **m})
             if m["trades"] >= cfg["min_validation_trades"] and (best is None or m["total_return"] > best["total_return"]):
                 best = rows[-1]
@@ -132,8 +140,8 @@ def run_experiment(name: str = "baseline_v1", log=print, reuse_dataset: bool = F
 
     # ---- Stage B: frozen design, run once on the 2026 holdout -------------------------------
     h, target = best["horizon"], f"fwd_{best['horizon']}"
-    strat = StrategyConfig(horizon=h, threshold=best["threshold"], max_positions=best["max_positions"],
-                           extend=best["extend"], starting_cash=cash)
+    strat = make_strategy(strategy_name, horizon=h, threshold=best["threshold"],
+                          max_positions=best["max_positions"], extend=best["extend"])
     hold_ds = ds.filter(pl.col("session_date") > val_end)
     hold_pred: dict[str, pl.DataFrame] = {}
     if "static" in cfg["retrain"]:
@@ -162,15 +170,15 @@ def run_experiment(name: str = "baseline_v1", log=print, reuse_dataset: bool = F
     holdout = {}
     for mode, preds in hold_pred.items():
         variants = {
-            "base": (strat, hold_costs),
-            "costs_2x": (strat, _costs(bars, val_end, 2.0)),
-            "t1_settlement": (StrategyConfig(**{**strat.__dict__, "proceeds": "next_day"}), hold_costs),
-            "no_costs": (strat, CostModel(fee_rate=0, fee_min=0, slippage_bps=0, default_half_spread_bps=0,
-                                          half_spread_bps={s: 0.0 for s in hold_costs.half_spread_bps})),
+            "base": (account, hold_costs),
+            "costs_2x": (account, _costs(bars, val_end, 2.0)),
+            "t1_settlement": (Account(starting_cash=cash, proceeds="next_day"), hold_costs),
+            "no_costs": (account, CostModel(fee_rate=0, fee_min=0, slippage_bps=0, default_half_spread_bps=0,
+                                            half_spread_bps={s: 0.0 for s in hold_costs.half_spread_bps})),
         }
         holdout[mode] = {}
-        for vname, (s_, c_) in variants.items():
-            m, daily, trades = _simulate(hold_bars, preds, s_, c_)
+        for vname, (a_, c_) in variants.items():
+            m, daily, trades = _simulate(hold_bars, preds, strat, c_, a_)
             holdout[mode][vname] = m
             atomic_write_parquet(daily, out_dir / f"equity_{mode}_{vname}.parquet")
             if vname == "base":

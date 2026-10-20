@@ -24,8 +24,7 @@ def data_sync(start: str = "2021-01-01", workers: int = 3) -> None:
     """Download 1m bars (universe + benchmarks) and the trading calendar from Alpaca."""
     from datetime import UTC, date, datetime, timedelta
 
-    from trading.market_data.api import sync, sync_calendar
-    from trading.universe.api import symbols
+    from trading.data.api import symbols, sync, sync_calendar
 
     syms = symbols("ai_chain") + symbols("benchmarks")
     cal = sync_calendar(date.fromisoformat(start), datetime.now(UTC).date())
@@ -41,9 +40,8 @@ def data_sync_n100(start: str = "2016-01-01", timeframe: str = "20Min", workers:
 
     import polars as pl
 
-    from trading.market_data.api import resolve_series, sync_series
+    from trading.data.api import membership, resolve_series, sync_series
     from trading.shared.storage import DATA_DIR, atomic_write_parquet
-    from trading.universe.nasdaq100 import membership
 
     out_dir = DATA_DIR / "raw" / "nasdaq-100"
     path = out_dir / "membership.parquet"
@@ -61,7 +59,7 @@ def data_sync_n100(start: str = "2016-01-01", timeframe: str = "20Min", workers:
 @app.command("data-clean")
 def data_clean() -> None:
     """Raw 1m bars → clean regular-session 5m bars."""
-    from trading.market_data.api import build_clean_5m
+    from trading.data.api import build_clean_5m
 
     build_clean_5m(log=lambda m: typer.echo(m))
 
@@ -69,7 +67,7 @@ def data_clean() -> None:
 @app.command("experiment")
 def experiment(name: str = "baseline_v1", reuse_dataset: bool = False) -> None:
     """Run an end-to-end experiment: features → train → validate → holdout → benchmarks."""
-    from trading.backtest.experiment import run_experiment
+    from trading.pipeline.experiment import run_experiment
 
     run_experiment(name, log=lambda m: typer.echo(m), reuse_dataset=reuse_dataset)
 
@@ -77,6 +75,6 @@ def experiment(name: str = "baseline_v1", reuse_dataset: bool = False) -> None:
 @app.command("report")
 def report(name: str = "baseline_v1") -> None:
     """Build the HTML report for a finished experiment run."""
-    from trading.reporting.report import build_report
+    from trading.report.api import build_report
 
     typer.echo(f"report written to {build_report(name)}")

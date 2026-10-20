@@ -2,7 +2,7 @@
 
 import polars as pl
 
-from trading.execution.cost_model import CostModel
+from trading.backtest.api import CostModel
 
 
 def buy_and_hold(bars: pl.DataFrame, weights: dict[str, float], start_cash: float, costs: CostModel) -> pl.DataFrame:

@@ -1,4 +1,4 @@
-"""Public API of the labeling module: forward returns the way the strategy would realise them.
+"""Labels (y): forward returns the way the strategy would realise them.
 
 Decision at the close of bar t → buy at the OPEN of bar t+1 → sell at the open of bar t+1+h,
 or at the open of the session's last bar if that comes first (the bot is flat overnight).

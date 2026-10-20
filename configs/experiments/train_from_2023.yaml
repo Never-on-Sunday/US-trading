@@ -9,6 +9,7 @@ periods:
   validation_end: 2025-12-31  # validation: 2025 (all tuning happens here)
   # holdout: 2026-01-02 → latest data (run once with the frozen design)
 horizons: [6, 12, 24, 72]     # holding period candidates in 5m bars: 30 min, 1 h, 2 h, ~rest of day
+strategy: threshold            # name in strategy/api.py STRATEGIES; grid values below are its parameters
 grid:                          # strategy settings tried on validation only
   threshold: [0.001, 0.0015, 0.002, 0.003, 0.004, 0.006]
   max_positions: [2, 4, 5]

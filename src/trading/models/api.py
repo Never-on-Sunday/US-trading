@@ -1,4 +1,4 @@
-"""Public API of the modeling module: train a pooled regressor that predicts forward return.
+"""Public API of the models module (workflow step 3): train a pooled regressor that predicts forward return.
 
 Estimator: scikit-learn HistGradientBoostingRegressor (histogram GBDT, the LightGBM algorithm).
 LightGBM/XGBoost need libomp, which is not installable on Intel macOS via Homebrew any more;
